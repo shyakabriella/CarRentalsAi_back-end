@@ -144,14 +144,8 @@ Route::middleware(['auth:sanctum'])->group(function () {
 
     /*
     |--------------------------------------------------------------------------
-    | ✅ VEHICLES IMAGES (ALIAS) - IMPORTANT FOR ADMIN UI
+    | ✅ VEHICLE IMAGES (ALIAS) - IMPORTANT FOR ADMIN UI
     |--------------------------------------------------------------------------
-    | Admin UI calls:
-    |   /api/vehicles/{vehicle}/images/primary
-    |   /api/vehicles/{vehicle}/images
-    |
-    | Keep inside auth:sanctum but NOT role-restricted to avoid "No image"
-    | caused by role mismatch.
     */
     Route::get('vehicles/{vehicle}/images', [ImageGeneratorController::class, 'index'])
         ->name('vehicles.images.index');
@@ -171,10 +165,11 @@ Route::middleware(['auth:sanctum'])->group(function () {
     /*
     |--------------------------------------------------------------------------
     | ✅ SHOWROOM (owner box)
+    | ✅ IMPORTANT: include host too (you use host in frontend)
     |--------------------------------------------------------------------------
     */
     Route::prefix('showroom')
-        ->middleware(['role:owner|agent|manager|admin'])
+        ->middleware(['role:owner|host|agent|manager|admin'])
         ->group(function () {
 
             Route::get('profile', [ShowroomProfileController::class, 'show'])
@@ -186,6 +181,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
             Route::get('profiles', [ShowroomProfileController::class, 'index'])
                 ->name('showroom.profiles.index');
 
+            // ✅ MAIN endpoint used by owners (works)
             Route::apiResource('vehicles', ShowroomVehicleController::class)
                 ->parameters(['vehicles' => 'vehicle'])
                 ->names('showroom.vehicles');
@@ -193,7 +189,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
             Route::post('vehicles/{vehicle}/claim', [ShowroomVehicleController::class, 'claim'])
                 ->name('showroom.vehicles.claim');
 
-            // (Optional) keep showroom image routes too (same controller)
+            // ✅ showroom image routes too
             Route::get('vehicles/{vehicle}/images', [ImageGeneratorController::class, 'index'])
                 ->name('showroom.images.index');
 
@@ -208,14 +204,32 @@ Route::middleware(['auth:sanctum'])->group(function () {
 
             Route::delete('vehicles/{vehicle}/images/{image}', [ImageGeneratorController::class, 'destroy'])
                 ->name('showroom.images.destroy');
+
+            /*
+            |--------------------------------------------------------------------------
+            | ✅ ALIAS ROUTES to fix frontend calling:
+            |    /api/showroom/2/vehicles
+            |
+            | This must be AFTER the static routes above.
+            |--------------------------------------------------------------------------
+            */
+            Route::get('{showroom}/vehicles', [ShowroomVehicleController::class, 'indexByShowroom'])
+                ->whereNumber('showroom')
+                ->name('showroom.vehicles.byShowroom');
+
+            Route::get('{showroom}/vehicles/{vehicle}', [ShowroomVehicleController::class, 'showByShowroom'])
+                ->whereNumber('showroom')
+                ->name('showroom.vehicles.showByShowroom');
         });
 
     /*
     |--------------------------------------------------------------------------
-    | Vehicles global write (admins/managers/agents only)
+    | ✅ Vehicles global write
+    | FIX: allow owner|host too (to stop 403 if frontend hits /vehicles)
+    | But controller will enforce "only own vehicles"
     |--------------------------------------------------------------------------
     */
-    Route::middleware(['role:admin|manager|agent'])->group(function () {
+    Route::middleware(['role:admin|manager|agent|owner|host'])->group(function () {
 
         Route::apiResource('vehicles', VehicleController::class)
             ->except(['index', 'show'])

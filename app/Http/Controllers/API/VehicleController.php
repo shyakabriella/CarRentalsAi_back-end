@@ -19,26 +19,64 @@ class VehicleController extends Controller
         return $has;
     }
 
-    private function isAgent(): bool
+    private function roleSlug(): ?string
     {
         $u = auth()->user();
-        if (!$u) return false;
-        if (method_exists($u, 'hasRole')) return $u->hasRole('agent');
-        return (optional($u->role)->slug ?? null) === 'agent';
+        if (!$u) return null;
+
+        // spatie roles
+        if (method_exists($u, 'getRoleNames')) {
+            $names = $u->getRoleNames();
+            return $names->first() ? strtolower((string)$names->first()) : null;
+        }
+
+        // single role object
+        return strtolower((string) (optional($u->role)->slug ?? optional($u->role)->name ?? ''));
+    }
+
+    private function isAgentLike(): bool
+    {
+        $slug = $this->roleSlug();
+        return $slug === 'agent';
+    }
+
+    private function isOwnerLike(): bool
+    {
+        $slug = $this->roleSlug();
+        return in_array($slug, ['owner','host'], true);
     }
 
     private function isAdminish(): bool
     {
         $u = auth()->user();
         if (!$u) return false;
-        if (method_exists($u, 'hasAnyRole')) return $u->hasAnyRole(['admin','manager']);
-        return in_array(optional($u->role)->slug, ['admin','manager'], true);
+
+        if (method_exists($u, 'hasAnyRole')) {
+            return $u->hasAnyRole(['admin','manager']);
+        }
+
+        $slug = $this->roleSlug();
+        return in_array($slug, ['admin','manager'], true);
     }
 
+    /**
+     * ✅ IMPORTANT:
+     * - owner/host/agent can ONLY modify their own vehicles (vehicles.user_id == auth id)
+     * - admin/manager can modify all
+     */
     private function authorizeOwnershipIfEnabled(Vehicle $vehicle): void
     {
-        if ($this->hasOwnerColumn() && $this->isAgent() && !empty($vehicle->user_id)) {
-            if ((int) $vehicle->user_id !== (int) auth()->id()) {
+        if (!$this->hasOwnerColumn()) return;
+
+        // admin/manager can do anything
+        if ($this->isAdminish()) return;
+
+        // owner/host/agent must be owner of the record
+        if ($this->isOwnerLike() || $this->isAgentLike()) {
+            if (empty($vehicle->user_id)) {
+                abort(403, 'This vehicle is not assigned to any owner. Please claim it first.');
+            }
+            if ((int)$vehicle->user_id !== (int)auth()->id()) {
                 abort(403, 'You are not allowed to modify this vehicle.');
             }
         }
@@ -61,7 +99,7 @@ class VehicleController extends Controller
             $request->query('owner_id');
 
         if ($owner !== null && $owner !== '' && !$request->filled('user_id')) {
-            $request->merge(['user_id' => (int) $owner]);
+            $request->merge(['user_id' => (int)$owner]);
         }
     }
 
@@ -74,12 +112,14 @@ class VehicleController extends Controller
 
         $q = Vehicle::query()->with(['type','location']);
 
+        // ✅ If owner/agent uses ?mine=1 → filter own
         if ($this->hasOwnerColumn() && $request->boolean('mine') && auth()->check()) {
             $q->where('user_id', auth()->id());
         }
 
+        // ✅ Admin can filter by user_id
         if ($this->hasOwnerColumn() && $this->isAdminish() && $request->filled('user_id')) {
-            $q->where('user_id', (int) $request->input('user_id'));
+            $q->where('user_id', (int)$request->input('user_id'));
         }
 
         if ($request->filled('status')) {
@@ -91,12 +131,13 @@ class VehicleController extends Controller
         if ($request->filled('location_id')) {
             $q->where('location_id', $request->input('location_id'));
         }
+
         if ($request->filled('vehicle_type_id')) {
             $q->where('vehicle_type_id', $request->input('vehicle_type_id'));
         }
 
         if ($request->filled('q')) {
-            $term = trim((string) $request->input('q'));
+            $term = trim((string)$request->input('q'));
             $q->where(function ($s) use ($term) {
                 $s->where('plate_no', 'like', "%{$term}%")
                   ->orWhere('make', 'like', "%{$term}%")
@@ -104,10 +145,10 @@ class VehicleController extends Controller
             });
         }
 
-        if ($request->filled('year_min'))  $q->where('year', '>=', (int) $request->input('year_min'));
-        if ($request->filled('year_max'))  $q->where('year', '<=', (int) $request->input('year_max'));
-        if ($request->filled('rate_min'))  $q->where('base_daily_rate', '>=', (float) $request->input('rate_min'));
-        if ($request->filled('rate_max'))  $q->where('base_daily_rate', '<=', (float) $request->input('rate_max'));
+        if ($request->filled('year_min')) $q->where('year', '>=', (int)$request->input('year_min'));
+        if ($request->filled('year_max')) $q->where('year', '<=', (int)$request->input('year_max'));
+        if ($request->filled('rate_min')) $q->where('base_daily_rate', '>=', (float)$request->input('rate_min'));
+        if ($request->filled('rate_max')) $q->where('base_daily_rate', '<=', (float)$request->input('rate_max'));
 
         $q->orderBy($sort, $dir);
 
@@ -118,7 +159,9 @@ class VehicleController extends Controller
 
     public function show(Vehicle $vehicle)
     {
-        $this->authorizeOwnershipIfEnabled($vehicle);
+        // ✅ allow reading, but if you want to restrict show too, keep this:
+        // $this->authorizeOwnershipIfEnabled($vehicle);
+
         return response()->json($vehicle->load(['type','location']));
     }
 
@@ -140,21 +183,23 @@ class VehicleController extends Controller
             'base_daily_rate'  => ['nullable','numeric','min:0'],
             'base_hourly_rate' => ['nullable','numeric','min:0'],
             'status'           => ['nullable','string', Rule::in(self::STATUSES)],
-            'location_id'      => ['nullable', 'integer', 'exists:locations,id'],
+            'location_id'      => ['nullable','integer','exists:locations,id'],
             'media'            => ['nullable','array'],
             'license_plate'    => ['sometimes','string','max:30'],
             'price_per_day'    => ['sometimes','numeric','min:0'],
             'image_url'        => ['sometimes','string','max:255'],
         ];
 
+        // ✅ admin/manager can set user_id
         if ($this->hasOwnerColumn() && $this->isAdminish()) {
             $rules['user_id'] = ['sometimes','integer','exists:users,id'];
         }
 
         $data = $request->validate($rules);
 
-        if ($this->hasOwnerColumn() && $this->isAgent()) {
-            $data['user_id'] = (int) auth()->id();
+        // ✅ owner/host/agent always own what they create
+        if ($this->hasOwnerColumn() && ( $this->isOwnerLike() || $this->isAgentLike() )) {
+            $data['user_id'] = (int)auth()->id();
         }
 
         if (empty($data['status'])) $data['status'] = 'available';
@@ -195,7 +240,8 @@ class VehicleController extends Controller
 
         $data = $request->validate($rules);
 
-        if ($this->hasOwnerColumn() && $this->isAgent()) {
+        // ✅ owner/host/agent cannot change ownership
+        if ($this->hasOwnerColumn() && ( $this->isOwnerLike() || $this->isAgentLike() )) {
             unset($data['user_id']);
         }
 
@@ -241,15 +287,11 @@ class VehicleController extends Controller
             if (!empty($valid)) $q->whereIn('status', $valid);
         }
 
-        if ($request->filled('location_id')) {
-            $q->where('location_id', $request->input('location_id'));
-        }
-        if ($request->filled('vehicle_type_id')) {
-            $q->where('vehicle_type_id', $request->input('vehicle_type_id'));
-        }
+        if ($request->filled('location_id')) $q->where('location_id', $request->input('location_id'));
+        if ($request->filled('vehicle_type_id')) $q->where('vehicle_type_id', $request->input('vehicle_type_id'));
 
         if ($request->filled('q')) {
-            $term = trim((string) $request->input('q'));
+            $term = trim((string)$request->input('q'));
             $q->where(function ($s) use ($term) {
                 $s->where('plate_no', 'like', "%{$term}%")
                   ->orWhere('make', 'like', "%{$term}%")
@@ -257,16 +299,14 @@ class VehicleController extends Controller
             });
         }
 
-        if ($request->filled('year_min'))  $q->where('year', '>=', (int) $request->input('year_min'));
-        if ($request->filled('year_max'))  $q->where('year', '<=', (int) $request->input('year_max'));
-        if ($request->filled('rate_min'))  $q->where('base_daily_rate', '>=', (float) $request->input('rate_min'));
-        if ($request->filled('rate_max'))  $q->where('base_daily_rate', '<=', (float) $request->input('rate_max'));
+        if ($request->filled('year_min')) $q->where('year', '>=', (int)$request->input('year_min'));
+        if ($request->filled('year_max')) $q->where('year', '<=', (int)$request->input('year_max'));
+        if ($request->filled('rate_min')) $q->where('base_daily_rate', '>=', (float)$request->input('rate_min'));
+        if ($request->filled('rate_max')) $q->where('base_daily_rate', '<=', (float)$request->input('rate_max'));
 
         $q->orderBy($sort, $dir);
 
-        return response()->json(
-            $q->limit($perPage)->get()
-        );
+        return response()->json($q->limit($perPage)->get());
     }
 
     public function publicShow(Vehicle $vehicle)
