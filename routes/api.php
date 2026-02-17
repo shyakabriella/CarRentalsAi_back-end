@@ -20,7 +20,7 @@ use App\Http\Controllers\API\{
     ShowroomVehicleController,
     UploadController,
     NearbyController,
-    ShowroomProfileController // ✅ ADD
+    ShowroomProfileController
 };
 
 /*
@@ -38,12 +38,10 @@ Route::post('/register', [RegisterController::class, 'register'])->name('auth.re
 */
 Route::prefix('public')->group(function () {
 
-    // Public vehicles browse
     Route::get('vehicles', [VehicleController::class, 'publicIndex'])->name('public.vehicles.index');
     Route::get('vehicles/{vehicle}', [VehicleController::class, 'publicShow'])->name('public.vehicles.show');
     Route::get('vehicles/{vehicle}/image', [VehicleController::class, 'publicPrimaryImage'])->name('public.vehicles.image');
 
-    // ✅ Nearby endpoints (no auth)
     Route::get('nearby/cars', [NearbyController::class, 'cars'])->name('public.nearby.cars');
     Route::get('nearby/drivers', [NearbyController::class, 'drivers'])->name('public.nearby.drivers');
     Route::get('nearby/location', [NearbyController::class, 'location'])->name('public.nearby.location');
@@ -89,9 +87,16 @@ Route::middleware(['auth:sanctum'])->group(function () {
 
     /*
     |--------------------------------------------------------------------------
+    | ✅ BOOKINGS: Allow ANY authenticated user (customer included) to CREATE
+    |--------------------------------------------------------------------------
+    */
+    Route::post('bookings', [BookingController::class, 'store'])
+        ->name('bookings.create');
+
+    /*
+    |--------------------------------------------------------------------------
     | Read-only for all authenticated users
     |--------------------------------------------------------------------------
-    | ✅ IMPORTANT: give each resource a UNIQUE name prefix
     */
     Route::apiResource('vehicle-types', VehicleTypeController::class)
         ->only(['index', 'show'])
@@ -139,6 +144,32 @@ Route::middleware(['auth:sanctum'])->group(function () {
 
     /*
     |--------------------------------------------------------------------------
+    | ✅ VEHICLES IMAGES (ALIAS) - IMPORTANT FOR ADMIN UI
+    |--------------------------------------------------------------------------
+    | Admin UI calls:
+    |   /api/vehicles/{vehicle}/images/primary
+    |   /api/vehicles/{vehicle}/images
+    |
+    | Keep inside auth:sanctum but NOT role-restricted to avoid "No image"
+    | caused by role mismatch.
+    */
+    Route::get('vehicles/{vehicle}/images', [ImageGeneratorController::class, 'index'])
+        ->name('vehicles.images.index');
+
+    Route::get('vehicles/{vehicle}/images/primary', [ImageGeneratorController::class, 'primary'])
+        ->name('vehicles.images.primary');
+
+    Route::post('vehicles/{vehicle}/images', [ImageGeneratorController::class, 'store'])
+        ->name('vehicles.images.store');
+
+    Route::patch('vehicles/{vehicle}/images/{image}', [ImageGeneratorController::class, 'update'])
+        ->name('vehicles.images.update');
+
+    Route::delete('vehicles/{vehicle}/images/{image}', [ImageGeneratorController::class, 'destroy'])
+        ->name('vehicles.images.destroy');
+
+    /*
+    |--------------------------------------------------------------------------
     | ✅ SHOWROOM (owner box)
     |--------------------------------------------------------------------------
     */
@@ -146,14 +177,15 @@ Route::middleware(['auth:sanctum'])->group(function () {
         ->middleware(['role:owner|agent|manager|admin'])
         ->group(function () {
 
-            // ✅ Showroom Profile (NEW)
             Route::get('profile', [ShowroomProfileController::class, 'show'])
                 ->name('showroom.profile.show');
 
             Route::post('profile', [ShowroomProfileController::class, 'upsert'])
                 ->name('showroom.profile.upsert');
 
-            // ✅ Showroom Vehicles
+            Route::get('profiles', [ShowroomProfileController::class, 'index'])
+                ->name('showroom.profiles.index');
+
             Route::apiResource('vehicles', ShowroomVehicleController::class)
                 ->parameters(['vehicles' => 'vehicle'])
                 ->names('showroom.vehicles');
@@ -161,6 +193,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
             Route::post('vehicles/{vehicle}/claim', [ShowroomVehicleController::class, 'claim'])
                 ->name('showroom.vehicles.claim');
 
+            // (Optional) keep showroom image routes too (same controller)
             Route::get('vehicles/{vehicle}/images', [ImageGeneratorController::class, 'index'])
                 ->name('showroom.images.index');
 
@@ -216,7 +249,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
             ->names('customers.admin');
 
         Route::apiResource('bookings', BookingController::class)
-            ->except(['index', 'show'])
+            ->except(['index', 'show', 'store'])
             ->names('bookings.admin');
 
         Route::post('bookings/{booking}/assign-driver', [BookingController::class, 'assignDriver'])

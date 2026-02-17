@@ -22,7 +22,7 @@ class AdminSeeder extends Seeder
             ['email' => 'admin@admin.com'],
             [
                 'name'     => 'System Admin',
-                'phone'    => '0782667888',
+                'phone'    => '0788888888',
                 'role'     => 'admin',                 
                 'password' => Hash::make('admin@123'),
             ]

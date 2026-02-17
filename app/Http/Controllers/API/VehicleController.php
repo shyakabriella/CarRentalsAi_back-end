@@ -10,10 +10,8 @@ use Illuminate\Support\Facades\Schema;
 
 class VehicleController extends Controller
 {
-    /** Allowed lifecycle statuses for vehicles */
     private const STATUSES = ['available','in_service','booked','maintenance','inactive'];
 
-    /** Whether vehicles table has user_id (for ownership) */
     private function hasOwnerColumn(): bool
     {
         static $has = null;
@@ -21,7 +19,6 @@ class VehicleController extends Controller
         return $has;
     }
 
-    /** Role helpers (spatie-compatible; safe fallback) */
     private function isAgent(): bool
     {
         $u = auth()->user();
@@ -38,13 +35,6 @@ class VehicleController extends Controller
         return in_array(optional($u->role)->slug, ['admin','manager'], true);
     }
 
-    /**
-     * Enforce ownership only if:
-     *  - vehicles.user_id column exists
-     *  - caller is agent
-     *  - and the vehicle is ALREADY assigned (user_id not null)
-     * Agents may edit UNASSIGNED vehicles (user_id = null).
-     */
     private function authorizeOwnershipIfEnabled(Vehicle $vehicle): void
     {
         if ($this->hasOwnerColumn() && $this->isAgent() && !empty($vehicle->user_id)) {
@@ -54,20 +44,26 @@ class VehicleController extends Controller
         }
     }
 
-    /** Map SPA aliases → DB fields before validation */
     private function normalizeAliases(Request $request): void
     {
         if ($request->filled('license_plate') && !$request->filled('plate_no')) {
             $request->merge(['plate_no' => $request->input('license_plate')]);
         }
+
         if ($request->filled('price_per_day') && !$request->filled('base_daily_rate')) {
             $request->merge(['base_daily_rate' => $request->input('price_per_day')]);
         }
-    }
 
-    /* =========================
-     * Authenticated (list/detail)
-     * ========================= */
+        $owner =
+            $request->input('user_id') ??
+            $request->query('user_id') ??
+            $request->input('owner_id') ??
+            $request->query('owner_id');
+
+        if ($owner !== null && $owner !== '' && !$request->filled('user_id')) {
+            $request->merge(['user_id' => (int) $owner]);
+        }
+    }
 
     public function index(Request $request)
     {
@@ -78,24 +74,20 @@ class VehicleController extends Controller
 
         $q = Vehicle::query()->with(['type','location']);
 
-        // show only mine if ?mine=1 (when user_id exists)
         if ($this->hasOwnerColumn() && $request->boolean('mine') && auth()->check()) {
             $q->where('user_id', auth()->id());
         }
 
-        // Optional owner filter for admins
         if ($this->hasOwnerColumn() && $this->isAdminish() && $request->filled('user_id')) {
             $q->where('user_id', (int) $request->input('user_id'));
         }
 
-        // Filters
         if ($request->filled('status')) {
             $statuses = (array) $request->input('status');
             $valid = array_values(array_intersect($statuses, self::STATUSES));
             if (!empty($valid)) $q->whereIn('status', $valid);
         }
 
-        // treat these as plain values (static ids or codes)
         if ($request->filled('location_id')) {
             $q->where('location_id', $request->input('location_id'));
         }
@@ -111,6 +103,7 @@ class VehicleController extends Controller
                   ->orWhere('model', 'like', "%{$term}%");
             });
         }
+
         if ($request->filled('year_min'))  $q->where('year', '>=', (int) $request->input('year_min'));
         if ($request->filled('year_max'))  $q->where('year', '<=', (int) $request->input('year_max'));
         if ($request->filled('rate_min'))  $q->where('base_daily_rate', '>=', (float) $request->input('rate_min'));
@@ -129,20 +122,12 @@ class VehicleController extends Controller
         return response()->json($vehicle->load(['type','location']));
     }
 
-    /* =========================
-     * Authenticated (write)
-     * ========================= */
-
-   public function store(Request $request)
+    public function store(Request $request)
     {
         $this->normalizeAliases($request);
 
         $rules = [
-            // UPDATE: Added 'integer' and 'exists' to validate against the DB table.
-            // This fixes the "selected vehicle type id is invalid" error,
-            // PROVIDED your 'vehicle_types' database table has these IDs populate.
             'vehicle_type_id'  => ['required', 'integer', 'exists:vehicle_types,id'],
-
             'plate_no'         => ['required','string','max:30', Rule::unique('vehicles','plate_no')],
             'vin'              => ['nullable','string','max:60', Rule::unique('vehicles','vin')],
             'make'             => ['nullable','string','max:80'],
@@ -155,12 +140,8 @@ class VehicleController extends Controller
             'base_daily_rate'  => ['nullable','numeric','min:0'],
             'base_hourly_rate' => ['nullable','numeric','min:0'],
             'status'           => ['nullable','string', Rule::in(self::STATUSES)],
-
-            // UPDATE: Added validation for location_id as well
             'location_id'      => ['nullable', 'integer', 'exists:locations,id'],
-
             'media'            => ['nullable','array'],
-            // Aliases (optional - handled by model mutators)
             'license_plate'    => ['sometimes','string','max:30'],
             'price_per_day'    => ['sometimes','numeric','min:0'],
             'image_url'        => ['sometimes','string','max:255'],
@@ -172,9 +153,7 @@ class VehicleController extends Controller
 
         $data = $request->validate($rules);
 
-        // If ownership exists and user is agent, force ownership
         if ($this->hasOwnerColumn() && $this->isAgent()) {
-            // Ensure the agent ID is an integer
             $data['user_id'] = (int) auth()->id();
         }
 
@@ -190,9 +169,7 @@ class VehicleController extends Controller
         $this->normalizeAliases($request);
 
         $rules = [
-            // same idea on update
             'vehicle_type_id'  => ['sometimes'],
-
             'plate_no'         => ['sometimes','string','max:30', Rule::unique('vehicles','plate_no')->ignore($vehicle->id)],
             'vin'              => ['nullable','string','max:60', Rule::unique('vehicles','vin')->ignore($vehicle->id)],
             'make'             => ['nullable','string','max:80'],
@@ -205,11 +182,8 @@ class VehicleController extends Controller
             'base_daily_rate'  => ['nullable','numeric','min:0'],
             'base_hourly_rate' => ['nullable','numeric','min:0'],
             'status'           => ['nullable','string', Rule::in(self::STATUSES)],
-
             'location_id'      => ['nullable'],
-
             'media'            => ['nullable','array'],
-            // Aliases on update too
             'license_plate'    => ['sometimes','string','max:30'],
             'price_per_day'    => ['sometimes','numeric','min:0'],
             'image_url'        => ['sometimes','string','max:255'],
@@ -221,7 +195,6 @@ class VehicleController extends Controller
 
         $data = $request->validate($rules);
 
-        // Agents cannot change owner
         if ($this->hasOwnerColumn() && $this->isAgent()) {
             unset($data['user_id']);
         }
@@ -250,10 +223,6 @@ class VehicleController extends Controller
 
         return response()->json($vehicle->fresh());
     }
-
-    /* =========================
-     * PUBLIC (no auth)
-     * ========================= */
 
     public function publicIndex(Request $request)
     {
@@ -287,6 +256,7 @@ class VehicleController extends Controller
                   ->orWhere('model', 'like', "%{$term}%");
             });
         }
+
         if ($request->filled('year_min'))  $q->where('year', '>=', (int) $request->input('year_min'));
         if ($request->filled('year_max'))  $q->where('year', '<=', (int) $request->input('year_max'));
         if ($request->filled('rate_min'))  $q->where('base_daily_rate', '>=', (float) $request->input('rate_min'));

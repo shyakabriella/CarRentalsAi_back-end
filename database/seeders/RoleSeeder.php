@@ -31,30 +31,6 @@ class RoleSeeder extends Seeder
             );
         }
 
-        // 2) Default Super Admin
-        if (! User::where('email', 'admin@smartcar.test')->exists()) {
-            $admin = User::create([
-                'name'     => 'Super Admin',
-                'email'    => 'admin@smartcar.test',
-                'phone'    => '0780000000',
-                'role'     => 'admin',                 // 👈 important
-                'password' => Hash::make('password'),
-            ]);
-
-            $admin->assignRole('admin');
-        }
-
-        // 3) Default Owner
-        if (! User::where('email', 'owner@smartcar.test')->exists()) {
-            $owner = User::create([
-                'name'     => 'Demo Owner',
-                'email'    => 'owner@smartcar.test',
-                'phone'    => '0781112223',
-                'role'     => 'owner',                 // 👈 important
-                'password' => Hash::make('password'),
-            ]);
-
-            $owner->assignRole('owner');
-        }
+       
     }
 }

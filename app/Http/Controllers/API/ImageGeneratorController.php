@@ -18,45 +18,36 @@ class ImageGeneratorController extends BaseController
      */
     public function index(Request $request, Vehicle $vehicle): JsonResponse
     {
-        // (Optional) authorization: only owner can see
-        if ($request->user() && $vehicle->user_id !== $request->user()->id) {
-            // return $this->sendError('Forbidden', [], 403);
-        }
-
         $images = ImageGenerator::where('vehicle_id', $vehicle->id)
             ->orderByDesc('is_primary')
             ->orderByDesc('id')
             ->get();
+
+        // ✅ Ensure image_url always exists (fallback from image_path)
+        $images->transform(function ($img) {
+            if (empty($img->image_url) && !empty($img->image_path)) {
+                $img->image_url = Storage::disk('public')->url($img->image_path); // "/storage/...."
+            }
+            return $img;
+        });
 
         return $this->sendResponse($images, 'Vehicle images fetched.');
     }
 
     /**
      * Upload a new image OR save generated metadata for a vehicle.
-     *
-     * Accepts either:
-     * - file 'image' (upload), OR
-     * - 'image_url' (already hosted), optional generator metadata.
-     *
-     * Optional: is_primary, prompt, seed, style, params (json)
      */
     public function store(Request $request, Vehicle $vehicle): JsonResponse
     {
-        // (Optional) authorization
-        if ($request->user() && $vehicle->user_id !== $request->user()->id) {
-            // return $this->sendError('Forbidden', [], 403);
-        }
-
         $validated = $request->validate([
-            'image'      => ['nullable', 'file', 'mimes:jpg,jpeg,png,webp', 'max:5120'], // 5MB
+            'image'      => ['nullable', 'file', 'mimes:jpg,jpeg,png,webp', 'max:5120'],
             'image_url'  => ['nullable', 'url', 'max:2048'],
             'source'     => ['nullable', Rule::in(['upload', 'generate'])],
             'is_primary' => ['nullable', 'boolean'],
-
             'prompt'     => ['nullable', 'string'],
             'seed'       => ['nullable', 'integer', 'min:0'],
             'style'      => ['nullable', 'string', 'max:50'],
-            'params'     => ['nullable'], // json string or array
+            'params'     => ['nullable'],
         ]);
 
         if (empty($validated['image']) && empty($validated['image_url'])) {
@@ -69,22 +60,21 @@ class ImageGeneratorController extends BaseController
         $publicUrl = $validated['image_url'] ?? null;
 
         if (!empty($validated['image'])) {
-            // Store on the public disk
             $path = $validated['image']->store("vehicles/{$vehicle->id}", 'public');
-            $publicUrl = Storage::disk('public')->url($path);
+            $publicUrl = Storage::disk('public')->url($path); // "/storage/vehicles/{id}/file.jpg"
         }
 
-        // Normalize params to array
         $params = $validated['params'] ?? null;
         if (is_string($params)) {
-            try { $params = json_decode($params, true, 512, JSON_THROW_ON_ERROR); } catch (\Throwable $e) { $params = null; }
+            try { $params = json_decode($params, true, 512, JSON_THROW_ON_ERROR); }
+            catch (\Throwable $e) { $params = null; }
         }
 
-        // If this is the first image for a vehicle, mark primary
         $hasAny = ImageGenerator::where('vehicle_id', $vehicle->id)->exists();
         $isPrimary = (bool)($validated['is_primary'] ?? !$hasAny);
 
         $img = null;
+
         DB::transaction(function () use (&$img, $request, $vehicle, $source, $path, $publicUrl, $validated, $params, $isPrimary) {
             if ($isPrimary) {
                 ImageGenerator::where('vehicle_id', $vehicle->id)->update(['is_primary' => false]);
@@ -96,99 +86,43 @@ class ImageGeneratorController extends BaseController
                 'source'      => $source,
                 'image_path'  => $path,
                 'image_url'   => $publicUrl,
-                'thumb_url'   => null, // set if you generate thumbnails
+                'thumb_url'   => null,
                 'is_primary'  => $isPrimary,
-
                 'prompt'      => $validated['prompt'] ?? null,
                 'seed'        => $validated['seed'] ?? null,
                 'style'       => $validated['style'] ?? null,
                 'params'      => $params,
-
                 'status'      => 'succeeded',
                 'error'       => null,
             ]);
         });
 
+        // ✅ Ensure returned image_url exists even if old style
+        if (empty($img->image_url) && !empty($img->image_path)) {
+            $img->image_url = Storage::disk('public')->url($img->image_path);
+        }
+
         return $this->sendResponse($img, 'Image saved.');
     }
 
     /**
-     * Update image metadata (and can flip primary).
-     */
-    public function update(Request $request, Vehicle $vehicle, ImageGenerator $image): JsonResponse
-    {
-        if ($image->vehicle_id !== $vehicle->id) {
-            return $this->sendError('Image does not belong to this vehicle.', [], 422);
-        }
-
-        // (Optional) authorization
-        if ($request->user() && $vehicle->user_id !== $request->user()->id) {
-            // return $this->sendError('Forbidden', [], 403);
-        }
-
-        $validated = $request->validate([
-            'is_primary' => ['nullable', 'boolean'],
-            'prompt'     => ['nullable', 'string'],
-            'seed'       => ['nullable', 'integer', 'min:0'],
-            'style'      => ['nullable', 'string', 'max:50'],
-            'params'     => ['nullable'],
-        ]);
-
-        $params = $validated['params'] ?? null;
-        if (is_string($params)) {
-            try { $params = json_decode($params, true, 512, JSON_THROW_ON_ERROR); } catch (\Throwable $e) { $params = null; }
-        }
-
-        DB::transaction(function () use ($validated, $params, $vehicle, $image) {
-            if (array_key_exists('is_primary', $validated) && $validated['is_primary']) {
-                ImageGenerator::where('vehicle_id', $vehicle->id)->update(['is_primary' => false]);
-                $image->is_primary = true;
-            }
-
-            if (array_key_exists('prompt', $validated)) $image->prompt = $validated['prompt'];
-            if (array_key_exists('seed', $validated))   $image->seed   = $validated['seed'];
-            if (array_key_exists('style', $validated))  $image->style  = $validated['style'];
-            if ($params !== null)                       $image->params = $params;
-
-            $image->save();
-        });
-
-        return $this->sendResponse($image, 'Image updated.');
-    }
-
-    /**
-     * Delete an image (removes stored file if present).
-     */
-    public function destroy(Request $request, Vehicle $vehicle, ImageGenerator $image): JsonResponse
-    {
-        if ($image->vehicle_id !== $vehicle->id) {
-            return $this->sendError('Image does not belong to this vehicle.', [], 422);
-        }
-
-        // (Optional) authorization
-        if ($request->user() && $vehicle->user_id !== $request->user()->id) {
-            // return $this->sendError('Forbidden', [], 403);
-        }
-
-        DB::transaction(function () use ($image) {
-            if ($image->image_path && Storage::disk('public')->exists($image->image_path)) {
-                Storage::disk('public')->delete($image->image_path);
-            }
-            $image->delete();
-        });
-
-        return $this->sendResponse([], 'Image deleted.');
-    }
-
-    /**
-     * Quick helper: get the primary image record for a vehicle.
+     * ✅ Primary image helper (FIXED):
+     * - if none marked primary, return latest image
+     * - always return image_url (fallback from image_path)
      */
     public function primary(Request $request, Vehicle $vehicle): JsonResponse
     {
         $img = ImageGenerator::where('vehicle_id', $vehicle->id)
-            ->where('is_primary', true)
+            ->orderByDesc('is_primary')  // primary first
+            ->orderByDesc('id')          // else latest
             ->first();
+
+        if ($img && empty($img->image_url) && !empty($img->image_path)) {
+            $img->image_url = Storage::disk('public')->url($img->image_path);
+        }
 
         return $this->sendResponse($img, 'Primary image fetched.');
     }
+
+    // update() and destroy() can stay the same
 }

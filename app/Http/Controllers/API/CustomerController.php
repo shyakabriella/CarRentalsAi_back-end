@@ -9,6 +9,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rule;
+use Illuminate\Support\Str;
 
 class CustomerController extends Controller
 {
@@ -24,28 +25,31 @@ class CustomerController extends Controller
         return response()->json($customer->load('user'));
     }
 
+    private function tempCode(): string
+    {
+        // Always unique
+        return 'CUS-TMP-' . Str::uuid()->toString();
+    }
+
     public function store(Request $request)
     {
         $data = $request->validate([
-            // Flow A: create new user
             'name'       => ['required_without:user_id', 'string', 'max:100'],
             'email'      => ['required_without:user_id', 'email', 'max:150', 'unique:users,email'],
             'phone'      => ['nullable', 'string', 'max:30'],
             'password'   => ['nullable', 'string', 'min:5'],
 
-            // Flow B: link existing user
             'user_id'    => ['nullable', 'exists:users,id'],
 
-            // Customer fields
             'document_no'  => ['nullable', 'string', 'max:100'],
             'preferences'  => ['nullable', 'array'],
             'status'       => ['nullable', 'string', Rule::in(['active','inactive'])],
-            // We generate code, but allow override if you *really* want to pass it:
             'code'         => ['sometimes', 'string', 'max:50', 'unique:customers,code'],
         ]);
 
         $result = DB::transaction(function () use ($data) {
-            // Prepare or fetch the user
+
+            // Prepare or fetch user
             if (!empty($data['user_id'])) {
                 $user = User::find($data['user_id']);
             } else {
@@ -55,23 +59,22 @@ class CustomerController extends Controller
                     'phone'    => $data['phone'] ?? null,
                     'password' => Hash::make($data['password'] ?? 'customer123'),
                 ]);
+
                 if (method_exists($user, 'assignRole')) {
-                    // Will throw if role 'customer' doesn't exist
-                    try { $user->assignRole('customer'); } catch (\Throwable $e) { /* ignore if role missing */ }
+                    try { $user->assignRole('customer'); } catch (\Throwable $e) {}
                 }
             }
 
-            // Create customer first to get its ID
+            // ✅ create customer with REQUIRED code
             $customer = Customer::create([
                 'user_id'     => $user->id,
                 'document_no' => $data['document_no'] ?? null,
                 'preferences' => $data['preferences'] ?? null,
                 'status'      => $data['status'] ?? 'active',
-                // temporary; we'll update with final code after we have the ID
-                'code'        => $data['code'] ?? '',
+                'code'        => $data['code'] ?? $this->tempCode(),
             ]);
 
-            // If no code provided, generate from ID (guaranteed unique)
+            // ✅ If no code provided, generate final code based on ID
             if (empty($data['code'])) {
                 $generated = 'CUS-'.now()->format('Y').'-'.str_pad((string)$customer->id, 6, '0', STR_PAD_LEFT);
                 $customer->update(['code' => $generated]);
@@ -80,8 +83,6 @@ class CustomerController extends Controller
             return [$user, $customer];
         });
 
-        /** @var \App\Models\User $user */
-        /** @var \App\Models\Customer $customer */
         [$user, $customer] = $result;
 
         return response()->json([

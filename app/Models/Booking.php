@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Carbon\Carbon;
 
 class Booking extends Model
 {
@@ -18,19 +19,45 @@ class Booking extends Model
         'pricing_snapshot', 'meta',
     ];
 
+    /**
+     * ✅ Defaults (so bookings always have consistent initial values)
+     */
+    protected $attributes = [
+        'status'         => 'pending',
+        'payment_status' => 'unpaid',
+        'currency'       => 'RWF',
+    ];
+
+    /**
+     * ✅ Auto-append computed attributes to JSON responses
+     */
+    protected $appends = [
+        'renter_days',
+        'has_driver',
+    ];
+
     protected function casts(): array
     {
         return [
             'pickup_time'      => 'datetime',
             'dropoff_time'     => 'datetime',
+            'status'           => 'string',
+            'payment_status'   => 'string',
+            'currency'         => 'string',
+
             'price_subtotal'   => 'decimal:2',
             'price_driver_fee' => 'decimal:2',
             'price_taxes'      => 'decimal:2',
             'price_total'      => 'decimal:2',
+
             'pricing_snapshot' => 'array',
             'meta'             => 'array',
         ];
     }
+
+    // -----------------------------------
+    // Relationships
+    // -----------------------------------
 
     public function customer()
     {
@@ -72,7 +99,56 @@ class Booking extends Model
         return $this->hasMany(AiMatchLog::class);
     }
 
-    /* Scopes */
+    // -----------------------------------
+    // Computed attributes (very useful for frontend)
+    // -----------------------------------
+
+    public function getHasDriverAttribute(): bool
+    {
+        return !empty($this->driver_id);
+    }
+
+    /**
+     * ✅ Days between pickup and dropoff (min 1)
+     * - Uses meta.renter_days if set (from controller)
+     * - Otherwise calculates from pickup/dropoff_time
+     */
+    public function getRenterDaysAttribute(): int
+    {
+        $meta = is_array($this->meta) ? $this->meta : [];
+        if (!empty($meta['renter_days'])) {
+            return max(1, (int) $meta['renter_days']);
+        }
+
+        try {
+            $start = $this->pickup_time ? Carbon::parse($this->pickup_time) : null;
+            $end   = $this->dropoff_time ? Carbon::parse($this->dropoff_time) : null;
+
+            if (!$start || !$end) return 1;
+
+            $minutes = $start->diffInMinutes($end, false);
+            if ($minutes <= 0) return 1;
+
+            $days = (int) ceil($minutes / (60 * 24));
+            return max(1, $days);
+        } catch (\Throwable $e) {
+            return 1;
+        }
+    }
+
+    /**
+     * ✅ Ensure pricing_snapshot is always an array (safe for frontend)
+     */
+    public function getPricingSnapshotAttribute($value)
+    {
+        $decoded = is_array($value) ? $value : (json_decode($value ?? '[]', true) ?: []);
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    // -----------------------------------
+    // Scopes
+    // -----------------------------------
+
     public function scopeStatus($q, string $status)
     {
         return $q->where('status', $status);
@@ -80,6 +156,6 @@ class Booking extends Model
 
     public function scopeActive($q)
     {
-        return $q->whereIn('status', ['pending','confirmed','in_progress']);
+        return $q->whereIn('status', ['pending', 'confirmed', 'in_progress']);
     }
 }
