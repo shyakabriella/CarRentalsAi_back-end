@@ -37,7 +37,6 @@ Route::post('/register', [RegisterController::class, 'register'])->name('auth.re
 |--------------------------------------------------------------------------
 */
 Route::prefix('public')->group(function () {
-
     Route::get('vehicles', [VehicleController::class, 'publicIndex'])->name('public.vehicles.index');
     Route::get('vehicles/{vehicle}', [VehicleController::class, 'publicShow'])->name('public.vehicles.show');
     Route::get('vehicles/{vehicle}/image', [VehicleController::class, 'publicPrimaryImage'])->name('public.vehicles.image');
@@ -49,7 +48,7 @@ Route::prefix('public')->group(function () {
 
 /*
 |--------------------------------------------------------------------------
-| ✅ ALIAS ROUTES (NO AUTH) — if frontend calls /api/nearby/...
+| ✅ ALIAS ROUTES (NO AUTH)
 |--------------------------------------------------------------------------
 */
 Route::get('nearby/cars', [NearbyController::class, 'cars'])->name('nearby.cars');
@@ -84,6 +83,15 @@ Route::middleware(['auth:sanctum'])->group(function () {
                 ->get();
         })->name('meta.vehicle-make-models');
     });
+
+    /*
+    |--------------------------------------------------------------------------
+    | ✅ Secure self routes
+    |--------------------------------------------------------------------------
+    */
+    Route::get('customers/me', [CustomerController::class, 'me'])->name('customers.me');
+    Route::get('drivers/me', [DriverController::class, 'me'])->name('drivers.me');
+    Route::get('bookings/me', [BookingController::class, 'me'])->name('bookings.me');
 
     /*
     |--------------------------------------------------------------------------
@@ -144,7 +152,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
 
     /*
     |--------------------------------------------------------------------------
-    | ✅ VEHICLE IMAGES (ALIAS) - IMPORTANT FOR ADMIN UI
+    | Vehicle images
     |--------------------------------------------------------------------------
     */
     Route::get('vehicles/{vehicle}/images', [ImageGeneratorController::class, 'index'])
@@ -164,8 +172,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
 
     /*
     |--------------------------------------------------------------------------
-    | ✅ SHOWROOM (owner box)
-    | ✅ IMPORTANT: include host too (you use host in frontend)
+    | Showroom
     |--------------------------------------------------------------------------
     */
     Route::prefix('showroom')
@@ -181,7 +188,6 @@ Route::middleware(['auth:sanctum'])->group(function () {
             Route::get('profiles', [ShowroomProfileController::class, 'index'])
                 ->name('showroom.profiles.index');
 
-            // ✅ MAIN endpoint used by owners (works)
             Route::apiResource('vehicles', ShowroomVehicleController::class)
                 ->parameters(['vehicles' => 'vehicle'])
                 ->names('showroom.vehicles');
@@ -189,7 +195,6 @@ Route::middleware(['auth:sanctum'])->group(function () {
             Route::post('vehicles/{vehicle}/claim', [ShowroomVehicleController::class, 'claim'])
                 ->name('showroom.vehicles.claim');
 
-            // ✅ showroom image routes too
             Route::get('vehicles/{vehicle}/images', [ImageGeneratorController::class, 'index'])
                 ->name('showroom.images.index');
 
@@ -205,14 +210,6 @@ Route::middleware(['auth:sanctum'])->group(function () {
             Route::delete('vehicles/{vehicle}/images/{image}', [ImageGeneratorController::class, 'destroy'])
                 ->name('showroom.images.destroy');
 
-            /*
-            |--------------------------------------------------------------------------
-            | ✅ ALIAS ROUTES to fix frontend calling:
-            |    /api/showroom/2/vehicles
-            |
-            | This must be AFTER the static routes above.
-            |--------------------------------------------------------------------------
-            */
             Route::get('{showroom}/vehicles', [ShowroomVehicleController::class, 'indexByShowroom'])
                 ->whereNumber('showroom')
                 ->name('showroom.vehicles.byShowroom');
@@ -224,13 +221,10 @@ Route::middleware(['auth:sanctum'])->group(function () {
 
     /*
     |--------------------------------------------------------------------------
-    | ✅ Vehicles global write
-    | FIX: allow owner|host too (to stop 403 if frontend hits /vehicles)
-    | But controller will enforce "only own vehicles"
+    | Vehicles global write
     |--------------------------------------------------------------------------
     */
     Route::middleware(['role:admin|manager|agent|owner|host'])->group(function () {
-
         Route::apiResource('vehicles', VehicleController::class)
             ->except(['index', 'show'])
             ->names('vehicles.write');
@@ -241,7 +235,7 @@ Route::middleware(['auth:sanctum'])->group(function () {
 
     /*
     |--------------------------------------------------------------------------
-    | Admin/Manager write operations (global)
+    | Admin / Manager write operations
     |--------------------------------------------------------------------------
     */
     Route::middleware(['role:admin|manager'])->group(function () {
